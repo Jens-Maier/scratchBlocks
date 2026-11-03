@@ -7,6 +7,33 @@ import blf
 last_mouse_pos = [100, 200]
 _is_modal_running = False
 
+cachedShader = None
+
+def get_block_shader():
+    global cachedShader
+    if cachedShader is None:
+        cachedShader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    return cachedShader
+
+_shared_body_batch = None
+_shared_outline_batch = None
+
+def get_shared_batches(width, height):
+    global _shared_body_batch, _shared_outline_batch
+    shader = get_block_shader()
+
+    # Recreate only if dimensions change or uninitialised
+    vertices = ((0, 0), (width, 0), (0, -height), (width, -height))
+    indices = ((0, 1, 2), (2, 1, 3))
+    _shared_body_batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices=indices)
+
+    outline_verts = ((0, 0), (width, 0), (width, -height), (0, -height))
+    outline_indices = ((0, 1), (1, 2), (2, 3), (3, 0))
+    _shared_outline_batch = batch_for_shader(shader, 'LINES', {"pos": outline_verts}, indices=outline_indices)
+
+    return _shared_body_batch, _shared_outline_batch
+
+
 # data structure for a block
 class ScratchBlockData:
     def __init__(self, block_type, x=50, y=100, label=None, color=None, has_text_input=False, value="", num_text_inputs=0, is_nesting=False, num_slots=2, is_set_label=False, is_get_label=False):
@@ -16,6 +43,7 @@ class ScratchBlockData:
 
         self.is_set_label = is_set_label
         self.is_get_label = is_get_label
+        is_single_input = is_set_label or is_get_label or block_type == "INPUT_GEO"
 
         # Mehrere Textfelder (z. B. 3 für Vektoren X, Y, Z) oder einzelnes Textfeld
         self.num_text_inputs = 1 if (is_set_label or is_get_label) else num_text_inputs
@@ -43,7 +71,33 @@ class ScratchBlockData:
         self.prev_block = None
         self.next_block = None
 
+        # Cache containers for GPU batches
+        self.batch_body = None
+        self.batch_outline = None
+        self.last_w = -1
+        self.last_h = -1
+
         self.update_layout()
+
+    def update_gpu_batches(self):
+        if self.width == self.last_w and self.height == self.last_h and self.batch_body is not None:
+            return
+
+        shader = get_block_shader()
+
+        # main body batch 
+        vertices = ((0, 0), (self.width, 0), (0, -self.height), (self.width, -self.height))
+        indices = ((0, 1, 2), (2, 1, 3))
+        self.batch_body = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices = indices)
+
+        # outline batch
+        outline_verts = ((0, 0), (self.width, 0), (self.width, -self.height), (0, -self.height))
+        outline_indices = ((0, 1), (1, 2), (2, 3), (3, 0))
+        self.batch_outline = batch_for_shader(shader, 'LINES', {"pos": outline_verts}, indices = outline_indices)
+
+        self.last_w = self.width
+        self.last_h = self.height
+        
 
     def get_input_rects(self):
         """Gibt eine Liste von Rechtecken für alle Text-Inputs zurück."""
@@ -112,8 +166,14 @@ class ScratchBlockData:
             self.width = 160
             self.height = 34
 
+        # whenever layout updates, refresh GPU batches
+        self.update_gpu_batches()
+
         if update_parent and self.parent_nest_block:
             self.parent_nest_block.update_layout()
+
+
+
 
     def get_clicked_input_index(self, mx, my):
         rects = self.get_input_rects()
@@ -161,17 +221,57 @@ class ScratchBlockData:
 # Global list storing all blocks on our canvas
 canvas_blocks = []
 
-def draw_rect(x, y, w, h, color):
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+#def draw_rect(x, y, w, h, color):
+#    shader = blockShader #gpu.shader.from_builtin('UNIFORM_COLOR')
+#    vertices = ((x, y), (x + w, y), (x, y - h), (x + w, y - h))
+#    indices = ((0, 1, 2), (2, 1, 3))
+#    batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices = #indices)
+#    shader.bind()
+#    shader.uniform_float("color", color)
+#    batch.draw(shader)
+#
+#def draw_rect_outline(x, y, w, h, color=(0.0, 0.0, 0.0, 1.0), thickness=2.0):
+#    shader = blockShader #gpu.shader.from_builtin('UNIFORM_COLOR')
+#    vertices = ((x, y), (x + w, y), (x + w, y - h), (x, y - h))
+#    indices = ((0, 1), (1, 2), (2, 3), (3, 0))
+#    batch = batch_for_shader(shader, 'LINES', {"pos": vertices}, #indices=indices)
+#    gpu.state.line_width_set(thickness)
+#    shader.bind()
+#    shader.uniform_float("color", color)
+#    batch.draw(shader)
+#    gpu.state.line_width_set(1.0)
+
+def draw_cashed_rect(x, y, batch, color, thickness=None):
+    if not batch:
+        return
+    shader = get_block_shader()
+    shader.bind()
+    shader.uniform_float("color", color)
+    
+    # Optional line thickness handling for outlines
+    if thickness is not None:
+        gpu.state.line_width_set(thickness)
+        
+    # Use push/pop matrix stack
+    gpu.matrix.push()
+    gpu.matrix.translate((x, y))
+    batch.draw(shader)
+    gpu.matrix.pop()
+
+    if thickness is not None:
+        gpu.state.line_width_set(1.0)
+
+def draw_rect_optimized(x, y, w, h, color):
+    shader = get_block_shader()
     vertices = ((x, y), (x + w, y), (x, y - h), (x + w, y - h))
     indices = ((0, 1, 2), (2, 1, 3))
-    batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices = indices)
+    batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices=indices)
     shader.bind()
     shader.uniform_float("color", color)
     batch.draw(shader)
 
-def draw_rect_outline(x, y, w, h, color=(0.0, 0.0, 0.0, 1.0), thickness=2.0):
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+def draw_rect_outline_optimized(x, y, w, h, color=(0.0, 0.0, 0.0, 1.0), thickness=2.0):
+    shader = get_block_shader()
     vertices = ((x, y), (x + w, y), (x + w, y - h), (x, y - h))
     indices = ((0, 1), (1, 2), (2, 3), (3, 0))
     batch = batch_for_shader(shader, 'LINES', {"pos": vertices}, indices=indices)
@@ -203,12 +303,29 @@ def get_draw_order(b):
 
 def draw_block_callback():
     gpu.state.blend_set('ALPHA')
+    shader = get_block_shader()
+    shader.bind()
+
     sorted_blocks = sorted(canvas_blocks, key=get_draw_order)
     for b in sorted_blocks:
+        body_batch, outline_batch = get_shared_batches(b.width, b.height)
+
+        # apply matrix translation
+        gpu.matrix.push()
+        gpu.matrix.translate((b.x, b.y))
+
         # 1. Main block body
         block_color = getattr(b, 'color', (0.9, 0.6, 0.1, 1.0))
-        draw_rect(b.x, b.y, b.width, b.height, block_color)
-        draw_rect_outline(b.x, b.y, b.width, b.height, (0.0, 0.0, 0.0, 1.0), thickness=2.0)
+        shader.uniform_float("color", block_color)
+        body_batch.draw(shader)
+        
+        # draw outline
+        gpu.state.line_width_set(2.0)
+        shader.uniform_float("color", (0.0, 0.0, 0.0, 1.0))
+        outline_batch.draw(shader)
+        gpu.state.line_width_set(1.0)
+
+        gpu.matrix.pop()
         
         # 2. Block label
         label = getattr(b, 'label', b.block_type)
@@ -224,7 +341,7 @@ def draw_block_callback():
             slot_rects = b.get_slot_rects()
             for i, (sx, sy, sw, sh) in enumerate(slot_rects):
                 if b.slots[i] is None:
-                    draw_rect(sx, sy, sw, sh, (0.15, 0.15, 0.18, 0.85))
+                    draw_rect_optimized(sx, sy, sw, sh, (0.15, 0.15, 0.18, 0.85))
                     blf.size(0, 10)
                     blf.color(0, 0.6, 0.6, 0.6, 0.8)
                     blf.position(0, sx + (sw / 2) - 4, sy - (sh / 2) - 4, 0)
@@ -236,8 +353,8 @@ def draw_block_callback():
             for i, (bx, by, bw, bh) in enumerate(rects):
                 is_active = (b.active_input_index == i)
                 box_bg = (1.0, 1.0, 0.82, 1.0) if is_active else (1.0, 1.0, 1.0, 0.95)
-                draw_rect(bx, by, bw, bh, box_bg)
-                draw_rect_outline(bx, by, bw, bh, (0.3, 0.3, 0.3, 1.0), thickness=1.0)
+                draw_rect_optimized(bx, by, bw, bh, box_bg)
+                #draw_rect_outline(bx, by, bw, bh, (0.3, 0.3, 0.3, 1.0), thickness=1.0)
                 
                 val_str = b.values[i]
                 if is_active:
@@ -277,7 +394,11 @@ def evaluate_slot_value(slot_block, context_labels):
 def evaluate_block_stack(stack_blocks, context_labels):
     current_data = None
     for curr in stack_blocks:
-        if curr.block_type == "MESH_CUBE":
+        if curr.block_type == "INPUT_GEO":
+            obj_name = curr.values[0] if curr.values and curr.values[0] else ""
+            if obj_name and obj_name in bpy.data.objects:
+                current_data = bpy.context.active_object
+        elif curr.block_type == "MESH_CUBE":
             current_data = {"translation": [0.0, 0.0, 0.0]}
         elif curr.block_type in {"VECTOR_MATH", "VECTOR"}:
             try:
@@ -294,8 +415,13 @@ def evaluate_block_stack(stack_blocks, context_labels):
             translation = [0.0, 0.0, 0.0]
             if curr.is_nesting and len(curr.slots) > 0 and curr.slots[0] is not None:
                 translation = evaluate_slot_value(curr.slots[0], context_labels)
-                if isinstance(current_data, dict) and "translation" in current_data:
-                    current_data["translation"] = [current_data["translation"][i] + translation[i] for i in range(3)]
+
+                # apply transformation to target object
+                target_obj = current_data if isinstance(current_data, bpy.types.Object) else bpy.context.active_object
+                if target_obj:
+                    target_obj.location = [target_obj.location[i] + translation[i] for i in range(3)]
+                    current_data = target_obj
+
         elif curr.block_type == "GEO_OUTPUT":
             pass
     return current_data
@@ -334,15 +460,8 @@ def run_evaluation_pipeline():
 
     final_data = evaluate_block_stack(stack_blocks, context_labels)
 
-    if final_data is not None and isinstance(final_data, dict) and "translation" in final_data:
-        obj = bpy.context.active_object
-        if obj is None or obj.type != 'MESH':
-            bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
-            obj = bpy.context.active_object
-
-        if obj:
-            obj.location = final_data["translation"]
-            print(f"Object moved!")
+    if final_data:
+        print(f"Scratch Graph evaluated successfully on object: {getattr(final_data, 'name', 'None')}")
             
 class SCRATCH_OT_evaluate_operator(bpy.types.Operator):
     bl_idname = "scratch.evaluate_graph"
@@ -486,7 +605,8 @@ class SCRATCH_OT_move_blocks_operator(bpy.types.Operator):
                             changed = True
 
                     if changed:
-                        run_evaluation_pipeline()
+                        #run_evaluation_pipeline()
+                        pass
                     return {'RUNNING_MODAL'}
 
             if event.type not in {'MOUSEMOVE', 'LEFTMOUSE', 'RIGHTMOUSE'}:
@@ -541,7 +661,7 @@ class SCRATCH_OT_move_blocks_operator(bpy.types.Operator):
                 dx = target_x - active_block.x
                 dy = target_y - active_block.y
                 active_block.update_position(dx, dy)
-                run_evaluation_pipeline()
+                #run_evaluation_pipeline()
         
 
         elif event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
@@ -679,7 +799,17 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
 
-        # 1. Mesh Primitive (Cube) - Source (Grün)
+        # 1. Input Geometry Block
+        op = layout.operator("scratch.add_block", text="Input Geometry", icon='OBJECT_DATA')
+        op.block_type = "INPUT_GEO"
+        op.label = "Input Object:"
+        op.num_text_inputs = 1
+        op.value = ""
+        op.is_nesting = False
+        op.color = (0.20, 0.50, 0.70, 1.0)
+
+
+        # 2. Mesh Primitive (Cube) - Source (Grün)
         op = layout.operator("scratch.add_block", text="Mesh Primitive (Cube)", icon='MESH_CUBE')
         op.block_type = "MESH_CUBE"
         op.label = "Mesh (Cube)"
