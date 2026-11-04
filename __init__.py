@@ -23,7 +23,13 @@ from . import scratch_blocks
 # import_modules = [
 #     'scratch_blocks']
 
+class SCRATCH_GNT_node_tree(bpy.types.NodeTree):
+    bl_idname = "ScratchGeometryNodeTree"
+    bl_label = "Scratch Geometry Nodes"
+    bl_icon = 'NODETREE'
+
 classes = (
+    SCRATCH_GNT_node_tree,
     scratch_blocks.SCRATCH_OT_move_blocks_operator,
     scratch_blocks.SCRATCH_OT_call_add_menu,
     scratch_blocks.SCRATCH_OT_add_block_operator,
@@ -59,6 +65,10 @@ def draw_header_menu(self, context):
     layout.menu("SCRATCH_MT_add_menu", text="Add Block", icon='ADD')
     layout.operator("scratch.move_blocks", text="Interact Blocks", icon='PLAY')
     layout.operator("scratch.evaluate_graph", text="Evaluate Graph", icon='FILE_SCRIPT')
+
+def draw_modifier(self, context, layout):
+    row = layout.row()
+    row.prop(self, "node_group", text="Graph")
 
 # for module_name in import_modules:
 #     full_name = __name__ + '.' + module_name

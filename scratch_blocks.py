@@ -2,12 +2,28 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
+import mathutils
+import math
+import json
 
 
 last_mouse_pos = [100, 200]
 _is_modal_running = False
 
+def get_active_scratch_tree():
+    obj = bpy.context.active_object
+    if not obj or obj.type != 'MESH':
+        return None
+    # Look for a geometry nodes modifier pointing to our custom tree type
+    for mod in obj.modifiers:
+        if mod.type == 'NODES' and mod.node_group:
+            if mod.node_group.bl_idname == "ScratchGeometryNodeTree":
+                return mod.node_group
+    return None
+
 cachedShader = None
+
+
 
 def get_block_shader():
     global cachedShader
@@ -33,6 +49,78 @@ def get_shared_batches(width, height):
 
     return _shared_body_batch, _shared_outline_batch
 
+
+def save_current_graph(graph_name):
+    # Serialize all blocks on the canvas into a JSON-compatible structure
+    graph_data = []
+    for b in canvas_blocks:
+        data = {
+            "block_type": b.block_type,
+            "label": b.label,
+            "x": b.x,
+            "y": b.y,
+            "values": b.values,
+            "is_nesting": b.is_nesting,
+            "color": list(b.color),
+        }
+        graph_data.append(data)
+    
+    json_str = json.dumps(graph_data, indent=2)
+    
+    # Save into a Blender Text data-block (serves as our graph file/asset)
+    text_block = bpy.data.texts.get(graph_name)
+    if not text_block:
+        text_block = bpy.data.texts.new(name=graph_name)
+    text_block.clear()
+    text_block.write(json_str)
+    
+    # Automatically attach this graph name to the active object's custom property
+    if bpy.context.active_object:
+        bpy.context.active_object["scratch_graph_name"] = graph_name
+        print(f"Graph '{graph_name}' saved and attached to {bpy.context.active_object.name}")
+
+
+def load_graph(graph_name):
+    global canvas_blocks
+    text_block = bpy.data.texts.get(graph_name)
+    if not text_block:
+        print(f"Graph '{graph_name}' not found.")
+        return
+
+    try:
+        graph_data = json.loads(text_block.as_string())
+    except json.JSONDecodeError:
+        print("Failed to parse graph JSON.")
+        return
+
+    # Clear current canvas
+    canvas_blocks.clear()
+
+    # Rebuild blocks from saved data
+    for data in graph_data:
+        new_block = ScratchBlockData(
+            block_type=data["block_type"],
+            x=data["x"],
+            y=data["y"],
+            label=data["label"],
+            color=tuple(data["color"]),
+            value=data["values"][0] if data["values"] else "",
+            num_text_inputs=len(data["values"]),
+            is_nesting=data["is_nesting"]
+        )
+        new_block.values = data["values"]
+        canvas_blocks.append(new_block)
+
+    run_evaluation_pipeline()
+    print(f"Graph '{graph_name}' loaded successfully.")
+
+
+@bpy.app.handlers.persistent
+def load_graph_on_object_select(scene):
+    active_obj = bpy.context.active_object
+    if active_obj and "scratch_graph_name" in active_obj:
+        graph_name = active_obj["scratch_graph_name"]
+        # Check if it differs from current canvas state, then load...
 
 # data structure for a block
 class ScratchBlockData:
@@ -221,26 +309,6 @@ class ScratchBlockData:
 # Global list storing all blocks on our canvas
 canvas_blocks = []
 
-#def draw_rect(x, y, w, h, color):
-#    shader = blockShader #gpu.shader.from_builtin('UNIFORM_COLOR')
-#    vertices = ((x, y), (x + w, y), (x, y - h), (x + w, y - h))
-#    indices = ((0, 1, 2), (2, 1, 3))
-#    batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices = #indices)
-#    shader.bind()
-#    shader.uniform_float("color", color)
-#    batch.draw(shader)
-#
-#def draw_rect_outline(x, y, w, h, color=(0.0, 0.0, 0.0, 1.0), thickness=2.0):
-#    shader = blockShader #gpu.shader.from_builtin('UNIFORM_COLOR')
-#    vertices = ((x, y), (x + w, y), (x + w, y - h), (x, y - h))
-#    indices = ((0, 1), (1, 2), (2, 3), (3, 0))
-#    batch = batch_for_shader(shader, 'LINES', {"pos": vertices}, #indices=indices)
-#    gpu.state.line_width_set(thickness)
-#    shader.bind()
-#    shader.uniform_float("color", color)
-#    batch.draw(shader)
-#    gpu.state.line_width_set(1.0)
-
 def draw_cashed_rect(x, y, batch, color, thickness=None):
     if not batch:
         return
@@ -372,6 +440,18 @@ def draw_block_callback():
 
 # ---   EVALUATION ENGINE ---
 
+def to_vec3(val):
+    if isinstance(val, (int, float)):
+        return [float(val), float(val), float(val)]
+    elif isinstance(val, list):
+        if len(val) >= 3:
+            return [float(val[0]), float(val[1]), float(val[2])]
+        elif len(val) == 2:
+            return [float(val[0]), float(val[1]), 0.0]
+        elif len(val) == 1:
+            return [float(val[0]), float(val[0]), float(val[0])]
+    return [0.0, 0.0, 0.0]
+
 def evaluate_slot_value(slot_block, context_labels):
     if not slot_block:
         return [0.0, 0.0, 0.0]
@@ -389,9 +469,107 @@ def evaluate_slot_value(slot_block, context_labels):
         val = context_labels.get(var_name, [0.0, 0.0, 0.0])
         return val if isinstance(val, list) else [0.0, 0.0, 0.0]
 
+    elif slot_block.block_type == "MATH_ADD":
+        v1 = to_vec3(evaluate_slot_value(slot_block.slots[0], context_labels) if len(slot_block.slots) > 0 else 0.0)
+        v2 = to_vec3(evaluate_slot_value(slot_block.slots[1], context_labels) if len(slot_block.slots) > 1 else 0.0)
+        return [v1[0] + v2[0], v1[1] + v2[1], v1[2] + v2[2]]
+
+    elif slot_block.block_type == "MATH_MULTIPLY":
+        v1 = to_vec3(evaluate_slot_value(slot_block.slots[0], context_labels) if len(slot_block.slots) > 0 else 0.0)
+        v2 = to_vec3(evaluate_slot_value(slot_block.slots[1], context_labels) if len(slot_block.slots) > 1 else 0.0)
+        return [v1[0] * v2[0], v1[1] * v2[1], v1[2] * v2[2]]
+
+    elif slot_block.block_type == "MATH_SIN":
+        v1 = to_vec3(evaluate_slot_value(slot_block.slots[0], context_labels) if len(slot_block.slots) > 0 else 0.0)
+        return [math.sin(v1[0]), math.sin(v1[1]), math.sin(v1[2])]
+    
     return [0.0, 0.0, 0.0]
 
 def evaluate_block_stack(stack_blocks, context_labels):
+    current_data = None
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    for curr in stack_blocks:
+        if curr.block_type == "INPUT_GEO":
+            obj_name = curr.values[0] if curr.values and curr.values[0] else ""
+            if obj_name and obj_name in bpy.data.objects:
+                target_obj = bpy.data.objects[obj_name]
+            else:
+                target_obj = bpy.context.active_object
+
+            if target_obj and target_obj.type == 'MESH':
+                obj_evaluated = target_obj.evaluated_get(depsgraph)
+
+                eval_mesh = obj_evaluated.to_mesh()
+
+                print(f"Reading evaluated mesh for {target_obj.name}:")
+                for v in eval_mesh.vertices[:3]:
+                    print(f" Vertex Coords: {v.co[:]}")
+
+                # CRITICAL: Clean up the temporary mesh from memory when done
+                obj_evaluated.to_mesh_clear()
+
+                current_data = target_obj
+
+        elif curr.block_type == "MESH_CUBE":
+            bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+            current_data = bpy.context.active_object
+
+        elif curr.block_type in {"VECTOR_MATH", "VECTOR"}:
+            try:
+                current_data = [float(curr.values[0]), float(curr.values[1]), float(curr.values[2])]
+            except ValueError:
+                current_data = [0.0, 0.0, 0.0]
+
+        elif curr.block_type == "SET_LABEL":
+            var_name = curr.values[0] if curr.values else "var"
+            context_labels[var_name] = current_data
+
+        elif curr.block_type == "GET_LABEL":
+            var_name = curr.values[0] if curr.values else "var"
+            current_data = context_labels.get(var_name, current_data)
+
+        elif curr.block_type == "TRANSFORM":
+            translation = [0.0, 0.0, 0.0]
+            if curr.is_nesting and len(curr.slots) > 0 and curr.slots[0] is not None:
+                translation = evaluate_slot_value(curr.slots[0], context_labels)
+
+            if isinstance(current_data, bpy.types.Object):    
+                # apply transformation to target object # -> s. gemini...
+                target_obj = current_data
+
+                # initialise base matrix snapshot if it doesn't exist
+                if "scratch_base_loc" not in target_obj:
+                    target_obj["scratch_base_loc"] = [target_obj.location.x, target_obj.location.y, target_obj.location.z]
+
+                base_loc = target_obj["scratch_base_loc"]
+                
+                # apply transformation
+                target_obj.location = (
+                    base_loc[0] + translation[0],
+                    base_loc[1] + translation[1], 
+                    base_loc[2] + translation[2]
+                )
+
+                obj_evaluated = target_obj.evaluated_get(depsgraph)
+                eval_mesh = obj_evaluated.to_mesh()
+                obj_evaluated.to_mesh_clear()
+
+                current_data = target_obj
+            else:
+                # no input object connected
+                current_data = None
+
+    
+        elif curr.block_type == "GEO_OUTPUT":
+            pass
+    return current_data
+
+        
+
+# old evaluate_block_stack()
+def evaluate_block_stack_OLD(stack_blocks, context_labels):
     current_data = None
     for curr in stack_blocks:
         if curr.block_type == "INPUT_GEO":
@@ -416,7 +594,7 @@ def evaluate_block_stack(stack_blocks, context_labels):
             if curr.is_nesting and len(curr.slots) > 0 and curr.slots[0] is not None:
                 translation = evaluate_slot_value(curr.slots[0], context_labels)
 
-                # apply transformation to target object
+                # apply transformation to target object # -> s. gemini...
                 target_obj = current_data if isinstance(current_data, bpy.types.Object) else bpy.context.active_object
                 if target_obj:
                     target_obj.location = [target_obj.location[i] + translation[i] for i in range(3)]
@@ -431,6 +609,7 @@ def run_evaluation_pipeline():
 
     if not canvas_blocks:
         print("ScratchBlocks: No blocks present")
+        reset_unlinked_scratch_objects(active_evaluated_obj=None)
         return
 
     # 1. Evaluate all independent stacks ending in SET_LABEL first so variables are populated
@@ -447,6 +626,7 @@ def run_evaluation_pipeline():
     output_block = next((b for b in canvas_blocks if b.block_type == "GEO_OUTPUT"), None)
     if not output_block:
         print("ScratchBlocks: No output block present")
+        reset_unlinked_scratch_objects(active_evaluated_obj=None)
         return
 
     stack_blocks = []
@@ -460,8 +640,19 @@ def run_evaluation_pipeline():
 
     final_data = evaluate_block_stack(stack_blocks, context_labels)
 
+    reset_unlinked_scratch_objects(active_evaluated_obj=final_data)
+
     if final_data:
         print(f"Scratch Graph evaluated successfully on object: {getattr(final_data, 'name', 'None')}")
+
+def reset_unlinked_scratch_objects(active_evaluated_obj):
+    for obj in bpy.data.objects:
+        if "scratch_base_loc" in obj:
+            if obj != active_evaluated_obj:
+                base_loc = obj["scratch_base_loc"]
+                obj.location = (base_loc[0], base_loc[1], base_loc[2])
+                del obj["scratch_base_loc"]
+
             
 class SCRATCH_OT_evaluate_operator(bpy.types.Operator):
     bl_idname = "scratch.evaluate_graph"
@@ -829,6 +1020,27 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_set_label = False
         op.is_get_label = False
         op.color = (0.25, 0.55, 0.85, 1.0) 
+
+        # --- MATH & EXPRESSION NODES ---
+        layout.separator()
+
+        # Math Add (+)
+        op = layout.operator("scratch.add_block", text="Math Add (+)", icon='ADD')
+        op.block_type = "MATH_ADD"
+        op.label = "( [] + [] )"
+        op.is_nesting = True
+        op.num_slots = 2
+        op.color = (0.30, 0.60, 0.80, 1.0)
+
+        # Math Sine (sin)
+        op = layout.operator("scratch.add_block", text="Math Sin", icon='RNA')
+        op.block_type = "MATH_SIN"
+        op.label = "Sin( [] )"
+        op.is_nesting = True
+        op.num_slots = 1
+        op.color = (0.90, 0.60, 0.10, 1.0)
+
+        layout.separator()
 
         # 3. Transform Geometry - Modifier (Orange, 1 Slot für Translation)
         op = layout.operator("scratch.add_block", text="Transform Geometry", icon='OBJECT_DATA')
