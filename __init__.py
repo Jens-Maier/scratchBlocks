@@ -13,28 +13,17 @@ bl_info = {
 #import importlib
 #import mathutils
 import bpy
-from . import scratch_blocks
+from . import scratch_data
+from . import scratch_ui
 
-# only for tooltips
-# from typing import TYPE_CHECKING
-# if TYPE_CHECKING:
-#     import scratch_blocks
-# 
-# import_modules = [
-#     'scratch_blocks']
-
-class SCRATCH_GNT_node_tree(bpy.types.NodeTree):
-    bl_idname = "ScratchGeometryNodeTree"
-    bl_label = "Scratch Geometry Nodes"
-    bl_icon = 'NODETREE'
 
 classes = (
-    SCRATCH_GNT_node_tree,
-    scratch_blocks.SCRATCH_OT_move_blocks_operator,
-    scratch_blocks.SCRATCH_OT_call_add_menu,
-    scratch_blocks.SCRATCH_OT_add_block_operator,
-    scratch_blocks.SCRATCH_OT_evaluate_operator,
-    scratch_blocks.SCRATCH_MT_add_menu,
+    #SCRATCH_GNT_node_tree,
+    scratch_ui.SCRATCH_OT_move_blocks_operator,
+    scratch_ui.SCRATCH_OT_call_add_menu,
+    scratch_ui.SCRATCH_OT_add_block_operator,
+    scratch_ui.SCRATCH_OT_evaluate_operator,
+    scratch_ui.SCRATCH_MT_add_menu,
 )
 
 addon_keymaps = []
@@ -58,17 +47,17 @@ def unregister_keymaps():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
 
-def draw_header_menu(self, context):
-    """Optional: Adds an 'Add Block' menu directly in the Image Editor top bar."""
-    layout = self.layout
-    layout.separator()
-    layout.menu("SCRATCH_MT_add_menu", text="Add Block", icon='ADD')
-    layout.operator("scratch.move_blocks", text="Interact Blocks", icon='PLAY')
-    layout.operator("scratch.evaluate_graph", text="Evaluate Graph", icon='FILE_SCRIPT')
-
-def draw_modifier(self, context, layout):
-    row = layout.row()
-    row.prop(self, "node_group", text="Graph")
+#def draw_header_menu(self, context):
+#    """Optional: Adds an 'Add Block' menu directly in the Image Editor top bar."""
+#    layout = self.layout
+#    layout.separator()
+#    layout.menu("SCRATCH_MT_add_menu", text="Add Block", icon='ADD')
+#    layout.operator("scratch.move_blocks", text="Interact Blocks", icon='PLAY')
+#    layout.operator("scratch.evaluate_graph", text="Evaluate Graph", icon='FILE_SCRIPT')
+#
+#def draw_modifier(self, context, layout):
+#    row = layout.row()
+#    row.prop(self, "node_group", text="Graph")
 
 # for module_name in import_modules:
 #     full_name = __name__ + '.' + module_name
@@ -79,10 +68,9 @@ def draw_modifier(self, context, layout):
 #         print(f"Error importing {full_name}: {e}")
 #         raise
 
-def menu_func(self, context):
-    self.layout.operator(scratch_blocks.SCRATCH_OT_move_blocks_operator.bl_idname)
-    self.layout.operator(scratch_blocks.SCRATCH_OT_add_block_operator.bl_idname)
-        
+#def menu_func(self, context):
+#    self.layout.operator(scratch_blocks.SCRATCH_OT_move_blocks_operator.bl_idname)
+#    self.layout.operator(scratch_blocks.SCRATCH_OT_add_block_operator.bl_idname)
 
 def register():
     print("register() scratchBlocks")
@@ -90,15 +78,15 @@ def register():
         bpy.utils.register_class(c)
 
     #bpy.types.VIEW3D_MT_object.append(menu_func)
-    scratch_blocks.register_draw_handler()
+    scratch_ui.register_draw_handler()
     register_keymaps()
-    bpy.types.IMAGE_HT_header.append(draw_header_menu)
+    bpy.types.IMAGE_HT_header.append(scratch_ui.draw_header_menu)
 
 def unregister():
     print("unregister() scratchBlocks")
-    bpy.types.IMAGE_HT_header.remove(draw_header_menu)
+    bpy.types.IMAGE_HT_header.remove(scratch_ui.draw_header_menu)
     unregister_keymaps()
-    scratch_blocks.unregister_draw_handler()
+    scratch_ui.unregister_draw_handler()
     #bpy.types.VIEW3D_MT_object.remove(menu_func)
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

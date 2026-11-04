@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "scratchBlocks"
+version = "1.0.7"
+name = "scratchBlocks" # has to be exactly the same name as the folder that contains __init__.py, ...py, blender_manifest.toml
+tagline = "Scratch geometry blocks "
+maintainer = "Jens Maier"
+type = "add-on"
+location = "View3d"
+
+tags = ["Add Mesh", ]
+
+blender_version_min = "4.5.3"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+copyright = [
+  "2026 Jens Maier",
+]
+
+[permissions]
+files = "Read/write json files from/to disk"
