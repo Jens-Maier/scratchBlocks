@@ -40,12 +40,13 @@ def get_shared_batches(width, height):
 
 # data structure for a block
 class ScratchBlockData:
-    def __init__(self, block_type, x=50, y=100, label=None, color=None, has_text_input=False, value="", num_text_inputs=0, is_nesting=False, num_slots=2, is_set_label=False, is_get_label=False):
+    def __init__(self, block_type, x=50, y=100, label=None, color=None, has_text_input=False, value="", num_text_inputs=0, is_nesting=False, num_slots=2, is_set_label=False, is_get_label=False, has_display_text=False, target_object_name = None):
 
         self.block_type = block_type
         self.label = label or block_type
         self.color = color if color is not None else (0.9, 0.6, 0.1, 1.0)
-        self.target_object_name = None
+        self.target_object_name = target_object_name
+        self.has_display_text = has_display_text
 
         self.is_set_label = is_set_label
         self.is_get_label = is_get_label
@@ -223,10 +224,33 @@ class ScratchBlockData:
             next_dy = target_y - self.next_block.y
             self.next_block.update_position(next_dx, next_dy)
 
+
+_current_loaded_graph_name = None
+
+def get_current_loaded_graph_name():
+    return _current_loaded_graph_name
+
+def set_current_loaded_graph_name(name):
+    global _current_loaded_graph_name
+    _current_loaded_graph_name = name
+
 def save_current_graph(graph_name):
+    if not graph_name:
+        return
+    
+    # Map each block instance to its index in canvas_blocks
+    block_to_idx = {b: i for i, b in enumerate(canvas_blocks)}
+
     # Serialize all blocks on the canvas into a JSON-compatible structure
     graph_data = []
     for b in canvas_blocks:
+        next_idx = block_to_idx.get(b.next_block, -1) if hasattr(b, 'next_block') else -1
+
+        slot_indices = []
+        if getattr(b, 'is_nesting', False):
+            for child in b.slots:
+                slot_indices.append(block_to_idx.get(child, -1) if child else -1)
+
         data = {
             "block_type": b.block_type,
             "label": b.label,
@@ -235,6 +259,11 @@ def save_current_graph(graph_name):
             "values": b.values,
             "is_nesting": b.is_nesting,
             "color": list(b.color),
+            "has_display_text": getattr(b, 'has_display_text', False),
+            "target_object_name": getattr(b, 'target_object_name', None),
+            "next_block_idx": next_idx,
+            "slot_indices": slot_indices,
+            "num_slots": len(b.slots) if b.is_nesting else 0,
         }
         graph_data.append(data)
     
@@ -247,16 +276,18 @@ def save_current_graph(graph_name):
     text_block.clear()
     text_block.write(json_str)
     
-    # Automatically attach this graph name to the active object's custom property
-    if bpy.context.active_object:
-        bpy.context.active_object["scratch_graph_name"] = graph_name
-        print(f"Graph '{graph_name}' saved and attached to {bpy.context.active_object.name}")
-
+    
 def load_graph(graph_name):
-    global canvas_blocks
+    global canvas_blocks, _current_loaded_graph_name
+
+    # Save current graph before switching away
+    if _current_loaded_graph_name and _current_loaded_graph_name != graph_name:
+        save_current_graph(_current_loaded_graph_name)
+
+    _current_loaded_graph_name = graph_name
     text_block = bpy.data.texts.get(graph_name)
     if not text_block:
-        print(f"Graph '{graph_name}' not found.")
+        canvas_blocks.clear()
         return
 
     try:
@@ -278,12 +309,41 @@ def load_graph(graph_name):
             color=tuple(data["color"]),
             value=data["values"][0] if data["values"] else "",
             num_text_inputs=len(data["values"]),
-            is_nesting=data["is_nesting"]
+            is_nesting=data["is_nesting"], 
+            num_slots = data.get("num_slots", 2),
+            has_display_text=data.get("has_display_text", False),
+            target_object_name=data.get("target_object_name")
         )
         new_block.values = data["values"]
         canvas_blocks.append(new_block)
 
-    #run_evaluation_pipeline()
+    # Restore connections
+    for i, data in enumerate(graph_data):
+        block = canvas_blocks[i]
+        next_idx = data.get("next_block_idx", -1)
+        if 0 <= next_idx <len(canvas_blocks):
+            block.next_block = canvas_blocks[next_idx]
+            canvas_blocks[next_idx].prev_block = block
+
+        slot_indices = data.get("slot_indices", [])
+        if block.is_nesting and slot_indices:
+            for slot_idx, child_idx in enumerate(slot_indices):
+                if 0 <= child_idx < len(canvas_blocks):
+                    child_block = canvas_blocks[child_idx]
+                    block.slots[slot_idx] = child_block
+                    child_block.parent_nest_block = block
+                    child_block.parent_slot_index = slot_idx
+
+    for b in canvas_blocks:
+        if b.parent_nest_block is None:
+            b.update_layout(update_parent = False)
+
+    # Force area redraw
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.tag_redraw()
+                
     print(f"Graph '{graph_name}' loaded successfully.")
 
 

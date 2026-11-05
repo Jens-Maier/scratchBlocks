@@ -105,6 +105,22 @@ def draw_block_callback():
                 blf.position(0, bx + 4, by - 17, 0)
                 blf.draw(0, display_text)
 
+        # 5. Read-only Text Display Field for Mesh Primitives
+        if getattr(b, 'has_display_text', False) and not getattr(b, 'is_nesting', False):
+            rects = b.get_display_rect()
+            if rects:
+                bx, by, bw, bh = rects
+                # draw read-only box background
+                draw_rect_optimized(bx, by, bw, bh, (0.85, 0.85, 0.85, 0.95))
+
+                display_text = str(b.target_object_name) if b.target_object_name else "(none)"
+
+                blf.size(0, 11)
+                blf.color(0, 0.2, 0.2, 0.2, 1.0)
+                blf.position(0, bx + 6, by - 17, 0)
+                blf.draw(0, display_text)
+
+
     gpu.state.blend_set('NONE')
 
 _draw_handle = None
@@ -129,6 +145,9 @@ def draw_header_menu(self, context):
     layout.menu("SCRATCH_MT_add_menu", text="Add Block", icon='ADD')
     layout.separator()
     layout.operator("scratch.new_object_graph", text="New Graph", icon='ADD')
+    obj = context.active_object
+    if obj:
+        layout.prop(obj, "scratch_graph_name", text="Graph")
     layout.operator("scratch.save_object_graph", text="Save Graph", icon='FILE_TICK')
     layout.operator("scratch.load_object_graph", text="Load Graph", icon='FILE_FOLDER')
     layout.separator()
@@ -235,11 +254,12 @@ def load_graph_on_object_change(scene):
     try:
         active_obj = bpy.context.active_object
         if active_obj != _last_active_object:
+            _last_active_object = active_obj
             if active_obj and hasattr(active_obj, "scratch_graph_name") and active_obj.scratch_graph_name:
                 load_graph(active_obj.scratch_graph_name)
                 run_evaluation_pipeline()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"ScratchBlocks Error in load_graph_on_object_change: {e}")
 
 
 class SCRATCH_OT_evaluate_operator(bpy.types.Operator):
@@ -582,7 +602,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op = layout.operator("scratch.add_block", text="Input Geometry", icon='OBJECT_DATA')
         op.block_type = "INPUT_GEO"
         op.label = "Input Object:"
-        op.num_text_inputs = 1
+        op.num_text_inputs = 0
         op.value = ""
         op.is_nesting = False
         op.color = (0.20, 0.50, 0.70, 1.0)

@@ -1,6 +1,7 @@
 import bpy
 import math
-from .scratch_data import canvas_blocks
+import json
+from .scratch_data import canvas_blocks, get_current_loaded_graph_name, load_graph, save_current_graph, ScratchBlockData
 
 def to_vec3(val):
     if isinstance(val, (int, float)):
@@ -149,15 +150,18 @@ def sort_stacks_topologically(stacks):
 
     n = len(stacks)
     in_degree = {i: 0 for i in range(n)} # {0: 0, 1: 0, 2: 0} (dictionary)
-    adj = {i: [] for i in range(n)}
+    adjacency_list = {i: [] for i in range(n)}
+
+    # adjacency_list[0] = [1, 3]: Stack 1 and Stack 3 depends on stack 0
 
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
             # If stack j reads any variable written by stack i, then i must run before j
-            if stack_meta[i]['writes'] & stack_meta[j]['reads']:
-                adj[i].append(j)
+            if stack_meta[i]['writes'] & stack_meta[j]['reads']: # '&': set intersection
+                # 'writes' and 'reads' are lists
+                adjacency_list[i].append(j)
                 in_degree[j] += 1
 
     queue = [i for i in range(n) if in_degree[i] == 0]
@@ -167,7 +171,7 @@ def sort_stacks_topologically(stacks):
         curr_idx = queue.pop(0)
         sorted_indices.append(curr_idx)
 
-        for neighbor in adj[curr_idx]:
+        for neighbor in adjacency_list[curr_idx]:
             in_degree[neighbor] -= 1
             if in_degree[neighbor] == 0:
                 queue.append(neighbor)
@@ -180,27 +184,20 @@ def sort_stacks_topologically(stacks):
 
 
 
-def evaluate_block_stack(stack_blocks, context_labels):
+def evaluate_block_stack(stack_blocks, context_labels, owner_obj=None):
 
     current_data = None
     depsgraph = bpy.context.evaluated_depsgraph_get()
 
     for curr in stack_blocks:
         if curr.block_type == "INPUT_GEO":
-            obj_name = curr.values[0] if curr.values and curr.values[0] else ""
-            if obj_name and obj_name in bpy.data.objects:
-                target_obj = bpy.data.objects[obj_name]
-            else:
-                target_obj = bpy.context.active_object
-
+            target_obj = owner_obj if owner_obj else bpy.context.active_object
+            
             if target_obj and target_obj.type == 'MESH':
                 obj_evaluated = target_obj.evaluated_get(depsgraph)
-
                 eval_mesh = obj_evaluated.to_mesh()
-
                 # CRITICAL: Clean up the temporary mesh from memory when done
                 obj_evaluated.to_mesh_clear()
-
                 current_data = target_obj
 
         elif curr.block_type in {"MESH_CUBE", "MESH_CYLINDER"}:
@@ -293,50 +290,124 @@ def evaluate_block_stack(stack_blocks, context_labels):
 
 
 def run_evaluation_pipeline():
-    # reset all tracked objects to their base location
+    # Save the current active canvas state first
+    current_graph = get_current_loaded_graph_name()
+    active_obj = bpy.context.active_object
+    if current_graph and active_obj and getattr(active_obj, "scratch_graph_name", "") == current_graph:
+        save_current_graph(current_graph)
+    
+    # Find all objects in the scene that have a scratch graph assigned
+    objects_with_graphs = [obj for obj in bpy.data.objects if obj.get("scratch_graph_name")]
+
+    if not objects_with_graphs:
+        print("ScratchBlocks: No objects with graphs found.")
+        reset_unlinked_scratch_objects(set())
+        return
+
+    # Reset all tracked objects to their base location before evaluation loop
     for obj in bpy.data.objects:
         if "scratch_base_loc" in obj:
             base_loc = obj["scratch_base_loc"]
             obj.location = (base_loc[0], base_loc[1], base_loc[2])
             del obj["scratch_base_loc"]
 
-    context_labels = {}
-
-    if not canvas_blocks:
-        print("ScratchBlocks: No blocks present")
-        reset_unlinked_scratch_objects(active_evaluated_obj=None)
-        return
-
-    # 1. Extract all independent/chained statement stacks
-    all_stacks = get_all_stacks(canvas_blocks)
-
-    # 2. Filter out unreferenced branches (dead code elimination)
-    active_stacks = get_active_stacks(all_stacks)
-
-    # 3. Sort stacks topologically based on variable dependencies
-    ordered_stacks = sort_stacks_topologically(active_stacks)
-
+    evaluated_objects = set()
     final_data = None
 
-    # 4. Evaluate stacks in correct sequence
-    for stack in ordered_stacks:
-        print(f"--- STACK EVALUATION --- Chain: {[b.block_type for b in stack]}")
-        result = evaluate_block_stack(stack, context_labels)
-        if any(b.block_type == "GEO_OUTPUT" for b in stack):
-            final_data = result
+    # Evaluate each object's graph sequentially
+    for obj in objects_with_graphs:
+        graph_name = obj.get("scratch_graph_name")
 
-    reset_unlinked_scratch_objects(active_evaluated_obj=final_data)
+        # 1. If this graph is currently open on the canvas, use live canvas blocks
+        if graph_name == current_graph:
+            if not canvas_blocks:
+                continue
+            eval_blocks = canvas_blocks
+        else:
+            # 2. For other objects, load temporarily from their text data-block
+            text_block = bpy.data.texts.get(graph_name)
+            if not text_block:
+                print(f"ERROR: text datablock '{graph_name}' not found!")
+                print("Available text datablicks:")
+                for t in bpy.data.texts:
+                    print(f"   {t.name}")
+                continue
 
-    if final_data:
-        print(f"Scratch Graph evaluated successfully on object: {getattr(final_data, 'name', 'None')}")
-    
-    
+            # Temporarily parse/load blocks for this object graph without disrupting UI
+            try:
+                graph_data = json.loads(text_block.as_string())
+                print(f"Successfully loaded {len(graph_data)} blocks.")
+            except Exception as e:
+                print(f"ERROR parsing graph '{graph_name}': {e}")
+                continue
+
+            eval_blocks = []
+            for data in graph_data:
+                b = ScratchBlockData(
+                    block_type = data["block_type"],
+                    x = data["x"], y = data["y"],
+                    label = data["label"], 
+                    color = tuple(data["color"]),
+                    value = data["values"][0] if data["values"] else "",
+                    num_text_inputs = len(data["values"]),
+                    is_nesting = data["is_nesting"],
+                    num_slots = data.get("num_slots", 2),
+                    has_display_text = data.get("has_display_text", False),
+                    target_object_name = data.get("target_object_name")
+                )
+                b.values = data["values"]
+                eval_blocks.append(b)
+
+            # Restore block links for background evaluation
+            for i, data in enumerate(graph_data):
+                block = eval_blocks[i]
+                next_idx = data.get("next_block_idx", -1)
+                if 0 <= next_idx < len(eval_blocks):
+                    block.next_block = eval_blocks[next_idx]
+                    eval_blocks[next_idx].prev_block = block
+
+                slot_indices = data.get("slot_indices", [])
+                if block.is_nesting and slot_indices:
+                    for slot_idx, child_idx in enumerate(slot_indices):
+                        if 0 <= child_idx < len(eval_blocks):
+                            child_block = eval_blocks[child_idx]
+                            block.slots[slot_idx] = child_block
+                            child_block.parent_nest_block = block
+                            child_block.parent_slot_index = slot_idx
+
+            for b in eval_blocks:
+                if b.parent_nest_block is None:
+                    b.update_layout(update_parent = False)
+
+        all_stacks = get_all_stacks(eval_blocks)
+        active_stacks = get_active_stacks(all_stacks)
+        ordered_stacks = sort_stacks_topologically(active_stacks)
+
+        print(f"Object: {obj.name}")
+        print(f"Graph: {graph_name}")
+        print(f"Blocks loaded: {len(eval_blocks)}")
+        print(f"All stacks: {len(all_stacks)}")
+        print(f"Active stacks: {len(active_stacks)}")
+        print(f"Ordered stacks: {len(ordered_stacks)}")
+
+        context_labels = {}
+        final_data = None
+        for stack in ordered_stacks:
+            result = evaluate_block_stack(stack, context_labels, owner_obj=obj)
+            if any(b.block_type == "GEO_OUTPUT" for b in stack):
+                final_data = result
+
+        if isinstance(final_data, bpy.types.Object):
+            evaluated_objects.add(final_data)
+
+    # Clean up unlinked objects only after ALL graphs have finished evaluating
+    reset_unlinked_scratch_objects(evaluated_objects)
 
 
-def reset_unlinked_scratch_objects(active_evaluated_obj):
+def reset_unlinked_scratch_objects(evaluated_objects):
     for obj in bpy.data.objects:
         if "scratch_base_loc" in obj:
-            if obj != active_evaluated_obj:
+            if obj not in evaluated_objects:
                 base_loc = obj["scratch_base_loc"]
                 obj.location = (base_loc[0], base_loc[1], base_loc[2])
                 del obj["scratch_base_loc"]
