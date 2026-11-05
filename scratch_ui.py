@@ -250,14 +250,16 @@ _last_active_object = None
 
 @bpy.app.handlers.persistent
 def load_graph_on_object_change(scene):
-    global _last_active_object
+    global _last_active_object_name
     try:
         active_obj = bpy.context.active_object
-        if active_obj != _last_active_object:
-            _last_active_object = active_obj
-            if active_obj and hasattr(active_obj, "scratch_graph_name") and active_obj.scratch_graph_name:
-                load_graph(active_obj.scratch_graph_name)
-                run_evaluation_pipeline()
+        current_name = active_obj.scratch_graph_name if (active_obj and hasattr(active_obj, "scratch_graph_name")) else ""
+
+        if active_obj != bpy.context.view_layer.objects.active or current_name != _last_active_object_name:
+            _last_active_object_name = current_name
+            if active_obj and current_name:
+                load_graph(current_name)
+                #run_evaluation_pipeline()
     except Exception as e:
         print(f"ScratchBlocks Error in load_graph_on_object_change: {e}")
 
@@ -605,7 +607,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.num_text_inputs = 0
         op.value = ""
         op.is_nesting = False
-        op.color = (0.20, 0.50, 0.70, 1.0)
+        #op.color = (0.20, 0.50, 0.70, 1.0)
 
 
         # 2. Mesh Primitive (Cube) - Source (Grün)
@@ -616,7 +618,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_nesting = False
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.22, 0.60, 0.35, 1.0)
+        #op.color = (0.22, 0.60, 0.35, 1.0)
 
         # 2b. Mesh Primitive (Cylinder) - Source (Grün)
         op = layout.operator("scratch.add_block", text="Mesh Primitive (Cylinder)", icon='MESH_CYLINDER')
@@ -626,7 +628,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_nesting = False
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.22, 0.60, 0.35, 1.0)
+        #op.color = (0.22, 0.60, 0.35, 1.0)
 
         # 2. Vector Math / Vector Input (Blau, mit 3 Float-Inputs für X, Y, Z)
         op = layout.operator("scratch.add_block", text="Vector Math", icon='CON_LOCLIKE')
@@ -637,7 +639,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_nesting = False
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.25, 0.55, 0.85, 1.0) 
+        #op.color = (0.25, 0.55, 0.85, 1.0) 
 
         # --- MATH & EXPRESSION NODES ---
         layout.separator()
@@ -648,7 +650,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.label = "( [] + [] )"
         op.is_nesting = True
         op.num_slots = 2
-        op.color = (0.30, 0.60, 0.80, 1.0)
+        #op.color = (0.30, 0.60, 0.80, 1.0)
 
         # Math Sine (sin)
         op = layout.operator("scratch.add_block", text="Math Sin", icon='RNA')
@@ -656,7 +658,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.label = "Sin( [] )"
         op.is_nesting = True
         op.num_slots = 1
-        op.color = (0.90, 0.60, 0.10, 1.0)
+        #op.color = (0.90, 0.60, 0.10, 1.0)
 
         layout.separator()
 
@@ -669,7 +671,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.num_slots = 1
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.90, 0.60, 0.10, 1.0) 
+        #op.color = (0.90, 0.60, 0.10, 1.0) 
 
         # 4. Group Output - Sink (Rot)
         op = layout.operator("scratch.add_block", text="Group Output", icon='EXPORT')
@@ -679,7 +681,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_nesting = False
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.85, 0.25, 0.25, 1.0) 
+        #op.color = (0.85, 0.25, 0.25, 1.0) 
 
         layout.separator()
 
@@ -692,7 +694,7 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_set_label = True
         op.is_get_label = False
         op.value = "my_geo"
-        op.color = (0.85, 0.35, 0.20, 1.0)
+        #op.color = (0.85, 0.35, 0.20, 1.0)
 
         # 6. Get Label Block (Hellblau)
         op = layout.operator("scratch.add_block", text="Get Label", icon='EYEDROPPER')
@@ -703,5 +705,5 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_set_label = False
         op.is_get_label = True
         op.value = "my_geo"
-        op.color = (0.20, 0.50, 0.80, 1.0)
+        #op.color = (0.20, 0.50, 0.80, 1.0)
     

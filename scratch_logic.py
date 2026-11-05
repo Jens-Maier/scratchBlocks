@@ -202,19 +202,13 @@ def evaluate_block_stack(stack_blocks, context_labels, owner_obj=None):
 
         elif curr.block_type in {"MESH_CUBE", "MESH_CYLINDER"}:
             # 1. Determine target object to reuse or replace
-            target_obj = None
-            if isinstance(current_data, bpy.types.Object) and current_data.type == 'MESH':
-                target_obj = current_data
-            elif getattr(curr, 'target_object_name', None) and curr.target_object_name in bpy.data.objects:
-                target_obj = bpy.data.objects[curr.target_object_name]
-
-            # 2. Generate the primitive temporarily
-            if target_obj:
+            target_obj = owner_obj if owner_obj else bpy.context.active_object
+            if target_obj and target_obj.type == 'MESH':
                 if curr.block_type == "MESH_CYLINDER":
                     bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.0, location=(0, 0, 0))
                 else:
                     bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
-            
+
                 temp_obj = bpy.context.active_object
 
                 old_mesh = target_obj.data
@@ -227,15 +221,8 @@ def evaluate_block_stack(stack_blocks, context_labels, owner_obj=None):
                 current_data = target_obj
                 curr.target_object_name = target_obj.name
             else:
-                # No existing object tracked yet, create the primitive permanently and bind it to this block
-                if curr.block_type == "MESH_CYLINDER":
-                    bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.0, location=(0, 0, 0))
-                else:
-                    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
-
-                new_obj = bpy.context.active_object
-                current_data = new_obj
-                curr.target_object_name = new_obj.name
+                current_data = None
+                       
 
 
         elif curr.block_type in {"VECTOR_MATH", "VECTOR"}:
@@ -262,13 +249,13 @@ def evaluate_block_stack(stack_blocks, context_labels, owner_obj=None):
                 target_obj = current_data
 
                 if "scratch_base_loc" not in target_obj:
-                    target_obj["scratch_base_loc"] = [target_obj.location.x, target_obj.location.y, target_obj.location.z]
+                    target_obj["scratch_base_loc"] = list(target_obj.location)
 
                 # apply transformation
                 target_obj.location = (
-                    target_obj.location[0] + translation[0],
-                    target_obj.location[1] + translation[1], 
-                    target_obj.location[2] + translation[2]
+                    target_obj["scratch_base_loc"][0] + translation[0],
+                    target_obj["scratch_base_loc"][1] + translation[1], 
+                    target_obj["scratch_base_loc"][2] + translation[2]
                 )
 
                 obj_evaluated = target_obj.evaluated_get(depsgraph)
@@ -304,12 +291,40 @@ def run_evaluation_pipeline():
         reset_unlinked_scratch_objects(set())
         return
 
+    # Initialise base state
+    for obj in bpy.data.objects:
+        if obj.get("scratch_graph_name") or "scratch_base_initialized" in obj:
+            if "scratch_base_initialized" not in obj:
+                obj["scratch_base_loc"] = list(obj.location)
+                obj["scratch_base_rot"] = list(obj.rotation_euler)
+                obj["scratch_base_scale"] = list(obj.scale)
+                if obj.type == 'MESH' and obj.data:
+                    base_mesh = obj.data.copy()
+                    base_mesh.use_fake_user = True
+                    obj["scratch_base_mesh_name"] = base_mesh.name
+                obj["scratch_base_initialized"] = True
+
     # Reset all tracked objects to their base location before evaluation loop
     for obj in bpy.data.objects:
-        if "scratch_base_loc" in obj:
-            base_loc = obj["scratch_base_loc"]
-            obj.location = (base_loc[0], base_loc[1], base_loc[2])
-            del obj["scratch_base_loc"]
+        if obj.get("scratch_base_initialized"):
+            if "scratch_base_loc" in obj:
+                base_loc = obj["scratch_base_loc"]
+                obj.location = (base_loc[0], base_loc[1], base_loc[2])
+            if "scratch_base_rot" in obj:
+                rot = obj["scratch_base_rot"]
+                obj.rotation_euler = (rot[0], rot[1], rot[2])
+            if "scratch_base_scale" in obj:
+                scale = obj["scratch_base_scale"]
+                obj.scale = (scale[0], scale[1], scale[2])
+
+            mesh_name = obj.get("scratch_base_mesh_name")
+            if mesh_name and mesh_name in bpy.data.meshes:
+                base_mesh = bpy.data.meshes[mesh_name]
+                if obj.type == 'MESH' and obj.data != base_mesh:
+                    old_mesh = obj.data
+                    obj.data = base_mesh
+                    if old_mesh and old_mesh.users == 0 and old_mesh.name != mesh_name:
+                        bpy.data.meshes.remove(old_mesh)
 
     evaluated_objects = set()
     final_data = None
@@ -383,12 +398,12 @@ def run_evaluation_pipeline():
         active_stacks = get_active_stacks(all_stacks)
         ordered_stacks = sort_stacks_topologically(active_stacks)
 
-        print(f"Object: {obj.name}")
-        print(f"Graph: {graph_name}")
-        print(f"Blocks loaded: {len(eval_blocks)}")
-        print(f"All stacks: {len(all_stacks)}")
-        print(f"Active stacks: {len(active_stacks)}")
-        print(f"Ordered stacks: {len(ordered_stacks)}")
+        # print(f"Object: {obj.name}")
+        # print(f"Graph: {graph_name}")
+        # print(f"Blocks loaded: {len(eval_blocks)}")
+        # print(f"All stacks: {len(all_stacks)}")
+        # print(f"Active stacks: {len(active_stacks)}")
+        # print(f"Ordered stacks: {len(ordered_stacks)}")
 
         context_labels = {}
         final_data = None
@@ -406,6 +421,28 @@ def run_evaluation_pipeline():
 
 def reset_unlinked_scratch_objects(evaluated_objects):
     for obj in bpy.data.objects:
+        if obj.get("scratch_base_initialized"):
+            if obj not in evaluated_objects:
+                if "scratch_base_loc" in obj:
+                    loc = obj["scratch_base_loc"]
+                    obj.location = (loc[0], loc[1], loc[2])
+                if "scratch_base_rot" in obj:
+                    rot = obj["scratch_base_rot"]
+                    obj.rotation_euler = (rot[0], rot[1], rot[2])
+                if "scratch_base_scale" in obj:
+                    scale = obj["scratch_base_scale"]
+                    obj.scale = (scale[0], scale[1], scale[2])
+
+                mesh_name = obj.get("scratch_base_mesh_name")
+                if mesh_name and mesh_name in bpy.data.meshes:
+                    base_mesh = bpy.data.meshes[mesh_name]
+                    if obj.type == 'MESH' and obj.data != base_mesh:
+                        old_mesh = obj.data
+                        obj.data = base_mesh
+                        if old_mesh and old_mesh.users == 0 and old_mesh.name != mesh_name:
+                            bpy.data.meshes.remove(old_mesh)
+
+
         if "scratch_base_loc" in obj:
             if obj not in evaluated_objects:
                 base_loc = obj["scratch_base_loc"]

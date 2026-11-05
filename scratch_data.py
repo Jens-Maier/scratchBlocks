@@ -9,6 +9,25 @@ last_mouse_pos = [100, 200]
 _is_modal_running = False
 cachedShader = None
 
+# --- Global Block Color Registry ---
+BLOCK_COLORS = {
+    "INPUT_GEO": (0.20, 0.50, 0.70, 1.0),
+    "MESH_CUBE": (0.22, 0.60, 0.35, 1.0),
+    "MESH_CYLINDER": (0.22, 0.60, 0.35, 1.0),
+    "VECTOR_MATH": (0.25, 0.55, 0.85, 1.0),
+    "VECTOR": (0.25, 0.55, 0.85, 1.0),
+    "MATH_ADD": (0.30, 0.60, 0.80, 1.0),
+    "MATH_SIN": (0.90, 0.60, 0.10, 1.0),
+    "TRANSFORM": (0.90, 0.60, 0.10, 1.0),
+    "GEO_OUTPUT": (0.85, 0.25, 0.25, 1.0),
+    "SET_LABEL": (0.85, 0.35, 0.20, 1.0),
+    "GET_LABEL": (0.20, 0.50, 0.80, 1.0),
+}
+
+def get_block_color(block_type):
+    #Retrieves the global color for a given block type, with a fallback
+    return BLOCK_COLORS.get(block_type, (0.9, 0.6, 0.1, 1.0))
+
 def get_canvas_blocks():
     return canvas_blocks
 
@@ -44,7 +63,7 @@ class ScratchBlockData:
 
         self.block_type = block_type
         self.label = label or block_type
-        self.color = color if color is not None else (0.9, 0.6, 0.1, 1.0)
+        self.color = get_block_color(block_type)
         self.target_object_name = target_object_name
         self.has_display_text = has_display_text
 
@@ -258,7 +277,6 @@ def save_current_graph(graph_name):
             "y": b.y,
             "values": b.values,
             "is_nesting": b.is_nesting,
-            "color": list(b.color),
             "has_display_text": getattr(b, 'has_display_text', False),
             "target_object_name": getattr(b, 'target_object_name', None),
             "next_block_idx": next_idx,
@@ -301,12 +319,13 @@ def load_graph(graph_name):
 
     # Rebuild blocks from saved data
     for data in graph_data:
+        type = data["block_type"]
         new_block = ScratchBlockData(
-            block_type=data["block_type"],
+            block_type=type,
             x=data["x"],
             y=data["y"],
             label=data["label"],
-            color=tuple(data["color"]),
+            color=get_block_color(type),
             value=data["values"][0] if data["values"] else "",
             num_text_inputs=len(data["values"]),
             is_nesting=data["is_nesting"], 
