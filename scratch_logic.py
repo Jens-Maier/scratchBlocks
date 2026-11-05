@@ -173,7 +173,7 @@ def sort_stacks_topologically(stacks):
                 queue.append(neighbor)
 
     if len(sorted_indices) != n:
-        print("Warning: Curcular depandency detected in Scratch blocks. Falling back to default order.")
+        print("Warning: Circular depandency detected in Scratch blocks. Falling back to default order.")
         return stacks
 
     return [stacks[i] for i in sorted_indices]
@@ -203,9 +203,43 @@ def evaluate_block_stack(stack_blocks, context_labels):
 
                 current_data = target_obj
 
-        elif curr.block_type == "MESH_CUBE":
-            bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
-            current_data = bpy.context.active_object
+        elif curr.block_type in {"MESH_CUBE", "MESH_CYLINDER"}:
+            # 1. Determine target object to reuse or replace
+            target_obj = None
+            if isinstance(current_data, bpy.types.Object) and current_data.type == 'MESH':
+                target_obj = current_data
+            elif getattr(curr, 'target_object_name', None) and curr.target_object_name in bpy.data.objects:
+                target_obj = bpy.data.objects[curr.target_object_name]
+
+            # 2. Generate the primitive temporarily
+            if target_obj:
+                if curr.block_type == "MESH_CYLINDER":
+                    bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.0, location=(0, 0, 0))
+                else:
+                    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+            
+                temp_obj = bpy.context.active_object
+
+                old_mesh = target_obj.data
+                target_obj.data = temp_obj.data
+                bpy.data.objects.remove(temp_obj, do_unlink=True)
+
+                if old_mesh.users == 0:
+                    bpy.data.meshes.remove(old_mesh)
+
+                current_data = target_obj
+                curr.target_object_name = target_obj.name
+            else:
+                # No existing object tracked yet, create the primitive permanently and bind it to this block
+                if curr.block_type == "MESH_CYLINDER":
+                    bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.0, location=(0, 0, 0))
+                else:
+                    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+
+                new_obj = bpy.context.active_object
+                current_data = new_obj
+                curr.target_object_name = new_obj.name
+
 
         elif curr.block_type in {"VECTOR_MATH", "VECTOR"}:
             try:
@@ -232,7 +266,6 @@ def evaluate_block_stack(stack_blocks, context_labels):
 
                 if "scratch_base_loc" not in target_obj:
                     target_obj["scratch_base_loc"] = [target_obj.location.x, target_obj.location.y, target_obj.location.z]
-
 
                 # apply transformation
                 target_obj.location = (

@@ -5,7 +5,7 @@ import blf
 from . import scratch_data
 from .scratch_logic import run_evaluation_pipeline
 
-from .scratch_data import get_block_shader, canvas_blocks, last_mouse_pos, ScratchBlockData, get_shared_batches
+from .scratch_data import get_block_shader, canvas_blocks, last_mouse_pos, ScratchBlockData, get_shared_batches, save_current_graph, load_graph
 
 _is_modal_running = False
 
@@ -127,9 +127,13 @@ def draw_header_menu(self, context):
     layout = self.layout
     layout.separator()
     layout.menu("SCRATCH_MT_add_menu", text="Add Block", icon='ADD')
+    layout.separator()
+    layout.operator("scratch.new_object_graph", text="New Graph", icon='ADD')
+    layout.operator("scratch.save_object_graph", text="Save Graph", icon='FILE_TICK')
+    layout.operator("scratch.load_object_graph", text="Load Graph", icon='FILE_FOLDER')
+    layout.separator()
     layout.operator("scratch.move_blocks", text="Interact Blocks", icon='PLAY')
     layout.operator("scratch.evaluate_graph", text="Evaluate Graph", icon='FILE_SCRIPT')
-
 #def draw_header_menu(self, context):
 #    """Optional: Adds an 'Add Block' menu directly in the Image Editor top bar."""
 #    layout = self.layout
@@ -140,6 +144,104 @@ def draw_header_menu(self, context):
 
 
 # --- Operators ---
+class SCRATCH_OT_new_object_graph(bpy.types.Operator):
+    bl_idname = "scratch.new_object_graph"
+    bl_label = "New Graph"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj:
+            self.report({'WARNING'}, "No active object selected")
+            return {'CANCELLED'}
+
+        graph_name = f"{obj.name}_graph"
+        obj.scratch_graph_name = graph_name
+        canvas_blocks.clear()
+
+        initial_block = ScratchBlockData("GEO_OUTPUT", x=200, y=300, label="Group Output", color=(0.85, 0.25, 0.25, 1.0))
+        canvas_blocks.append(initial_block)
+        save_current_graph(graph_name)
+        run_evaluation_pipeline()
+
+        self.report({'INFO'}, f"Created new graph '{graph_name}' for {obj.name}")
+        return {'FINISHED'}
+
+
+class SCRATCH_OT_save_object_graph(bpy.types.Operator):
+    bl_idname = "scratch.save_object_graph"
+    bl_label = "Save Graph"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or not obj.scratch_graph_name:
+            self.report({'WARNING'}, "No graph assigned to active object")
+            return {'CANCELLED'}
+
+        save_current_graph(obj.scratch_graph_name)
+        self.report({'INFO'}, f"Saved graph '{obj.scratch_graph_name}'")
+        return {'FINISHED'}
+
+class SCRATCH_OT_load_object_graph(bpy.types.Operator):
+    bl_idname = "scratch.load_object_graph"
+    bl_label = "Load Graph"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or not obj.scratch_graph_name:
+            self.report({'WARNING'}, "No graph assigned to active object")
+            return {'CANCELLED'}
+
+        load_graph(obj.scratch_graph_name)
+        run_evaluation_pipeline()
+        self.report({'INFO'}, f"Loaded graph '{obj.scratch_graph_name}")
+        return {'FINISHED'}
+
+# --- SIDEBAR PANEL ---
+
+class SCRATCH_PT_panel(bpy.types.Panel):
+    bl_label = "Scratch Blocks"
+    bl_idname = "VIEW3D_PT_scratch_blocks"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Scratch"
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.active_object
+
+        if not obj:
+            layout.label(text="Select an object", icon='INFO')
+            return
+
+        layout.prop(obj, "scratch_graph_name", text="Graph Name")
+
+        row = layout.row(align=True)
+        row.operator("scratch.new_object_graph", text="New", icon='ADD')
+        row.operator("scratch.save_object_graph", text="Save", icon='FILE_TICK')
+        layout.operator("scratch.load_object_graph", text="Load", icon='FILE_FOLDER')
+
+        layout.separator()
+        layout.operator("scratch.evaluate_graph", text="Evaluate Graph", icon='FILE_SCRIPT')
+
+# --- auto-loading handler on object selection ---
+_last_active_object = None
+
+@bpy.app.handlers.persistent
+def load_graph_on_object_change(scene):
+    global _last_active_object
+    try:
+        active_obj = bpy.context.active_object
+        if active_obj != _last_active_object:
+            if active_obj and hasattr(active_obj, "scratch_graph_name") and active_obj.scratch_graph_name:
+                load_graph(active_obj.scratch_graph_name)
+                run_evaluation_pipeline()
+    except Exception:
+        pass
+
+
 class SCRATCH_OT_evaluate_operator(bpy.types.Operator):
     bl_idname = "scratch.evaluate_graph"
     bl_label = "Evaluate Scratch Graph"
@@ -447,10 +549,10 @@ class SCRATCH_OT_add_block_operator(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.area.type == 'IMAGE_EDITOR':
-            new_block = ScratchBlockData("NEW_BLOCK", x = event.mouse_region_x - 80, y = event.mouse_region_y + 20)
-            canvas_blocks.append(new_block)
-            context.area.tag_redraw()
-            return {'FINISHED'}
+            global last_mouse_pos
+            last_mouse_pos[0] = event.mouse_region_x
+            last_mouse_pos[1] = event.mouse_region_y
+            return self.execute(context)
         else:
             self.report({'WARNING'}, "Image editor not found, cannot run operator")
             return {'CANCELLED'}
@@ -494,7 +596,17 @@ class SCRATCH_MT_add_menu(bpy.types.Menu):
         op.is_nesting = False
         op.is_set_label = False
         op.is_get_label = False
-        op.color = (0.22, 0.60, 0.35, 1.0) 
+        op.color = (0.22, 0.60, 0.35, 1.0)
+
+        # 2b. Mesh Primitive (Cylinder) - Source (Grün)
+        op = layout.operator("scratch.add_block", text="Mesh Primitive (Cylinder)", icon='MESH_CYLINDER')
+        op.block_type = "MESH_CYLINDER"
+        op.label = "Mesh (Cylinder)"
+        op.num_text_inputs = 0
+        op.is_nesting = False
+        op.is_set_label = False
+        op.is_get_label = False
+        op.color = (0.22, 0.60, 0.35, 1.0)
 
         # 2. Vector Math / Vector Input (Blau, mit 3 Float-Inputs für X, Y, Z)
         op = layout.operator("scratch.add_block", text="Vector Math", icon='CON_LOCLIKE')

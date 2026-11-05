@@ -7,12 +7,10 @@ import json
 canvas_blocks = []
 last_mouse_pos = [100, 200]
 _is_modal_running = False
-
 cachedShader = None
 
 def get_canvas_blocks():
     return canvas_blocks
-
 
 def get_block_shader():
     global cachedShader
@@ -43,9 +41,11 @@ def get_shared_batches(width, height):
 # data structure for a block
 class ScratchBlockData:
     def __init__(self, block_type, x=50, y=100, label=None, color=None, has_text_input=False, value="", num_text_inputs=0, is_nesting=False, num_slots=2, is_set_label=False, is_get_label=False):
+
         self.block_type = block_type
         self.label = label or block_type
         self.color = color if color is not None else (0.9, 0.6, 0.1, 1.0)
+        self.target_object_name = None
 
         self.is_set_label = is_set_label
         self.is_get_label = is_get_label
@@ -283,7 +283,10 @@ def load_graph(graph_name):
         new_block.values = data["values"]
         canvas_blocks.append(new_block)
 
-    run_evaluation_pipeline()
+    #run_evaluation_pipeline()
     print(f"Graph '{graph_name}' loaded successfully.")
 
 
+def update_scratch_graph_property(self, context):
+    if self == context.active_object and self.scratch_graph_name:
+        load_graph(self.scratch_graph_name)
